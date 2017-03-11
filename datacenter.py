@@ -44,7 +44,6 @@ class Datacenter:
         threading.Thread(target=self.membership, args=()).start()
 
         print "Raft start"
-        print addresses
 
     # membership
     def membership(self):
