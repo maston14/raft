@@ -19,7 +19,7 @@ class Datacenter:
         self.voted_in = -1
         self.port = port
         self.last_update = time.time()
-        self.election_timeout = random.uniform(3.0, 5.0)
+        self.election_timeout = random.uniform(3.0, 6.0)
         self.nodes = nodes
         self.log = []
         self.running_as_leader = False
@@ -43,7 +43,7 @@ class Datacenter:
 
         threading.Thread(target=self.membership, args=()).start()
 
-        print "Raft start"
+        print "Raft start with timeout: %f" % self.election_timeout
 
     # membership
     def membership(self):
@@ -81,10 +81,10 @@ class Datacenter:
 
 
     def serve_as_leader(self):
-        time.sleep(0.5)
+        time.sleep(0.2)
         for (k, v) in addresses.items():
             print 'send heartbeat to %s:%s' %(v[0], v[1])
-            threading.Thread(target=self.send_a_heartbeat, args=(v[0], v[1]))
+            threading.Thread(target=self.send_a_heartbeat, args=(v[0], v[1])).start()
 
 
     # main RPCs
@@ -102,6 +102,7 @@ class Datacenter:
         if len(entries) == 0:
             print "got a heartbeat"
             self.reset_election_timeout()
+            return
         if leader_term < self.current_term:
             return (self.current_term, False)
 
