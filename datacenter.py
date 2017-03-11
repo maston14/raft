@@ -15,7 +15,7 @@ TIMEOUT_HIGH = 6.0
 HEARTBEAT_INTERVAL = 1.0
 MESSAGE_DELAY = 0.0
 
-
+# entry
 class Entry(object):
     def __init__(self, term=-1, command="", string=None):
         super(Entry, self).__init__()
