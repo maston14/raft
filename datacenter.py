@@ -137,7 +137,7 @@ class Datacenter:
                     self.granted_votes += 1
                     self.granted_votes_mutex.release()
             except Exception as e:
-                print "could not connect %s.. Exception: %" % str(e), str(port)
+                print "could not connect %s.. Exception: %s" % str(e), str(port)
                 time.sleep(0.5)
 
 
