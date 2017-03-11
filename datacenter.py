@@ -14,9 +14,9 @@ class Datacenter:
         # intially, every server is a follower
         self.host_id = host_id
         self.state = State.FOLLOWER
-        self.current_term = -1
+        self.current_term = 0
         self.leader_id = None
-        self.voted_in = -1
+        self.voted_in = 0
         self.port = port
         self.last_update = time.time()
         self.election_timeout = random.uniform(3.0, 6.0)
@@ -58,6 +58,7 @@ class Datacenter:
 
             while self.state == State.LEADER:
                 self.serve_as_leader()
+                time.sleep(1)
 
 
 
@@ -81,26 +82,25 @@ class Datacenter:
 
 
     def serve_as_leader(self):
-        time.sleep(0.2)
         for (k, v) in addresses.items():
-            print 'send heartbeat to %s:%s' %(v[0], v[1])
             threading.Thread(target=self.send_a_heartbeat, args=(v[0], v[1])).start()
 
 
     # main RPCs
     def request_vote_rpc(self, candidate_id, candidate_term, last_log_index, last_log_term):
         print 'I have been called to vote for node %d in term %d' % (candidate_id, candidate_term)
+        # when candidate have higher term than I have and I have not vote in that candidate term, I vote
         if candidate_term > self.current_term and candidate_term > self.voted_in:
             self.current_term = candidate_term
             self.voted_in = candidate_term
-            self.state = State.FOLLOWER
+            self.step_down()
+            self.reset_election_timeout()
             return self.current_term, True
         return self.current_term, False
 
 
     def append_entries_rpc(self, leader_term, leader_id, prev_log_index, prev_log_term, commited_index, entries = []):
         if len(entries) == 0:
-            print "got a heartbeat"
             self.reset_election_timeout()
             return
         if leader_term < self.current_term:
@@ -115,6 +115,9 @@ class Datacenter:
     def reset_election_timeout(self):
         self.last_update = time.time()
 
+    def step_down(self):
+        self.state = State.FOLLOWER
+
     def send_a_heartbeat(self, address, port):
         url = 'http://' + str(address) + ':' + str(port)
         try:
@@ -122,11 +125,10 @@ class Datacenter:
             # TODO: -1 should be changed
             s.append_entries_rpc(self.current_term, self.host_id, -1, -1, -1)
         except Exception as e:
-            print "could send heartbeat.. Exception: " + str(e)
+            print "could not send heartbeat to %s.. Exception: %s" % (str(port), str(e))
 
     def send_a_request_vote_rpc(self, address, port):
         url = 'http://' + str(address) + ':' + str(port)
-        print 'the url to request a rpc is %s' % url
         success = False
         while (not self.check_election_timeout()) and (not success) and self.state == State.CANDIDATE:
             try:
@@ -194,7 +196,7 @@ if __name__ == '__main__':
     my_port, nodes, addresses, tickets_left = cluster_init(config_filename = config_filename, host_id = host_id)
     datacenter_obj = Datacenter(host_id, my_port, nodes, addresses, tickets_left)
 
-    server = SimpleXMLRPCServer(("localhost", my_port), allow_none=True)
+    server = SimpleXMLRPCServer(("localhost", my_port), allow_none=True, logRequests=False)
     print "Listening on port %d..." % my_port
     server.register_multicall_functions()
     server.register_instance(datacenter_obj)
