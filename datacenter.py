@@ -133,7 +133,7 @@ class Datacenter(object):
 
         entries = [Entry(-1, "", string) for string in entries]
 
-        print "receive append from %d in term %d" % (leader_id, leader_term)
+        print "receive append from node[%d] in term %d" % (leader_id, leader_term)
         if leader_term < self.current_term:
             time.sleep(MESSAGE_DELAY)
             return (self.current_term, False)
