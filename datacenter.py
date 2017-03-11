@@ -89,7 +89,7 @@ class Datacenter:
 
     # main RPCs
     def request_vote_rpc(self, candidate_id, candidate_term, last_log_index, last_log_term):
-        print 'I have been called to vote for node %d in term %d' % candidate_id, candidate_term
+        print 'I have been called to vote for node %d in term %d' % (candidate_id, candidate_term)
         if candidate_term > self.current_term and candidate_term > self.voted_in:
             self.current_term = candidate_term
             self.voted_in = candidate_term
@@ -121,7 +121,7 @@ class Datacenter:
             # TODO: -1 should be changed
             s.append_entries_rpc(self.current_term, self.host_id, -1, -1, -1)
         except Exception as e:
-            print "could not connect.. Exception: " + str(e)
+            print "could send heartbeat.. Exception: " + str(e)
 
     def send_a_request_vote_rpc(self, address, port):
         url = 'http://' + str(address) + ':' + str(port)
@@ -130,14 +130,16 @@ class Datacenter:
         while (not self.check_election_timeout()) and (not success) and self.state == State.CANDIDATE:
             try:
                 s = xmlrpclib.ServerProxy(url)
+                print 'pass s'
                 term_return, vote_granted = s.request_vote_rpc(self.host_id, self.current_term, len(self.log), -1)
+                print 'pass t + v'
                 success = True
                 if vote_granted:
                     self.granted_votes_mutex.acquire()
                     self.granted_votes += 1
                     self.granted_votes_mutex.release()
             except Exception as e:
-                print "could not connect %s.. Exception: %s" % str(e), str(port)
+                print "could not connect %s.. Exception: %s" % (str(port), str(e))
                 time.sleep(0.5)
 
 
