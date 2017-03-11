@@ -83,6 +83,7 @@ class Datacenter:
     def serve_as_leader(self):
         time.sleep(0.5)
         for (k, v) in addresses.items():
+            print 'send heartbeat to %s:%s' %(v[0], v[1])
             threading.Thread(target=self.send_a_heartbeat, args=(v[0], v[1]))
 
 
@@ -129,9 +130,7 @@ class Datacenter:
         while (not self.check_election_timeout()) and (not success) and self.state == State.CANDIDATE:
             try:
                 s = xmlrpclib.ServerProxy(url)
-                print 'pass s'
                 term_return, vote_granted = s.request_vote_rpc(self.host_id, self.current_term, len(self.log), -1)
-                print 'pass t + v'
                 success = True
                 if vote_granted:
                     self.granted_votes_mutex.acquire()
