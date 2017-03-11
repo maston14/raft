@@ -3,6 +3,7 @@ import time
 import random
 from SimpleXMLRPCServer import SimpleXMLRPCServer
 import xmlrpclib
+import entry as Entry
 
 class State:
     LEADER = 2
@@ -77,6 +78,7 @@ class Datacenter:
 
         if self.granted_votes >= (len(addresses) + 1) / 2 + 1:
             self.change_state(State.LEADER)
+            self.leader_id = self.host_id
         else:
             self.change_state(State.FOLLOWER)
 
@@ -96,12 +98,16 @@ class Datacenter:
             self.step_down()
             self.reset_election_timeout()
             return self.current_term, True
+
         return self.current_term, False
 
 
     def append_entries_rpc(self, leader_term, leader_id, prev_log_index, prev_log_term, commited_index, entries = []):
         if len(entries) == 0:
             self.reset_election_timeout()
+            self.leader_id = leader_id
+            if self.state != State.FOLLOWER:
+                self.step_down()
             return
         if leader_term < self.current_term:
             return (self.current_term, False)
@@ -130,10 +136,15 @@ class Datacenter:
     def send_a_request_vote_rpc(self, address, port):
         url = 'http://' + str(address) + ':' + str(port)
         success = False
+        last_entry = self.log[-1]
+        term = -1
+        if last_entry != None:
+            term = last_entry.get_term()
+
         while (not self.check_election_timeout()) and (not success) and self.state == State.CANDIDATE:
             try:
                 s = xmlrpclib.ServerProxy(url)
-                term_return, vote_granted = s.request_vote_rpc(self.host_id, self.current_term, len(self.log), -1)
+                term_return, vote_granted = s.request_vote_rpc(self.host_id, self.current_term, len(self.log), term)
                 success = True
                 if vote_granted:
                     self.granted_votes_mutex.acquire()
@@ -149,6 +160,38 @@ class Datacenter:
         self.commited_for_current_term = False
         self.commit_votes_for_current_term = 0
         self.state = state
+
+    def get_a_rpc_connection_to_leader(self):
+        address = addresses[self.leader_id][0]
+        port = addresses[self.leader_id][1]
+        url = 'http://' + str(address) + ':' + str(port)
+        try:
+            s = xmlrpclib.ServerProxy(url)
+            return s
+        except Exception as e:
+            print "could not reach leader at %s.. Exception: %s" % (str(port), str(e))
+    # Client rpc
+
+    def buy_ticket_rpc(self, num):
+        # if I am the leader
+        if self.host_id == self.leader_id:
+            # a new entry
+            entry = Entry.Entry(self.current_term, num)
+            self.log.append(entry)
+
+            # then try to get it commit
+        else:
+            # forward it to the leader
+            rpc_connection = self.get_a_rpc_connection_to_leader()
+            try:
+                rpc_connection.buy_ticket_rpc(num)
+            except Exception as e:
+                print "could not reach leader .. Exception: %s" % str(e)
+
+
+
+
+
 
 ##############################################################################################
 
