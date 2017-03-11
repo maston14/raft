@@ -29,7 +29,6 @@ class Entry(object):
     def to_string(self):
         return str(self.term) + "|" + str(self.command)
 
-# datacenter
 class Datacenter(object):
     def __init__(self, host_id=None, ip=None, port=None, addresses=None, tickets_left=-1):
 
