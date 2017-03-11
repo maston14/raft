@@ -15,7 +15,6 @@ TIMEOUT_HIGH = 6.0
 HEARTBEAT_INTERVAL = 1.0
 MESSAGE_DELAY = 0.0
 
-# entry
 class Entry(object):
     def __init__(self, term=-1, command="", string=None):
         super(Entry, self).__init__()
@@ -30,7 +29,7 @@ class Entry(object):
     def to_string(self):
         return str(self.term) + "|" + str(self.command)
 
-
+# datacenter
 class Datacenter(object):
     def __init__(self, host_id=None, ip=None, port=None, addresses=None, tickets_left=-1):
 
