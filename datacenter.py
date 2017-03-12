@@ -16,6 +16,7 @@ TIMEOUT_LOW = 3.0
 TIMEOUT_HIGH = 6.0
 HEARTBEAT_INTERVAL = 1.0
 MESSAGE_DELAY = 0.0
+KILL = False
 
 class Entry(object):
     def __init__(self, term=-1, command="", string=None):
@@ -82,15 +83,18 @@ class Datacenter(object):
     # membership
     def membership(self):
         while True:
-            while self.state == FOLLOWER:
+            if KILL:
+                return
+
+            if self.state == FOLLOWER:
                 if self.check_election_timeout():
                     print 'Timeout, I am gonna be the second DT'
                     self.change_state(CANDIDATE)
 
-            while self.state == CANDIDATE:
+            if self.state == CANDIDATE:
                 self.run_election()
 
-            while self.state == LEADER:
+            if self.state == LEADER:
                 self.serve_as_leader()
                 time.sleep(HEARTBEAT_INTERVAL)
 
@@ -106,7 +110,8 @@ class Datacenter(object):
 
         while (self.state == CANDIDATE) and (not self.check_election_timeout()) and (
             self.granted_votes < (len(self.addresses) + 1) / 2 + 1):
-            continue
+            if KILL:
+                return
 
         if self.granted_votes >= (len(self.addresses) + 1) / 2 + 1:
             self.change_state(LEADER)
@@ -175,6 +180,7 @@ class Datacenter(object):
         if len(self.log) > 0 and (prev_log_index > len(self.log) - 1 or prev_log_term != self.log[prev_log_index].term):
             time.sleep(MESSAGE_DELAY)
             return (self.current_term, False)
+
         if len(self.log) <= 0 and prev_log_index != -1:
             time.sleep(MESSAGE_DELAY)
             return (self.current_term, False)
@@ -219,6 +225,9 @@ class Datacenter(object):
 
     def check_commit(self):
         while True:
+            if KILL:
+                return
+
             if self.state == LEADER:
                 for index in sorted(self.index_append_count.keys()):
                     if len(self.index_append_count[index]) + 1 >= (len(self.addresses) + 1) / 2 + 1:
@@ -248,12 +257,20 @@ class Datacenter(object):
 
             # repair all entries
             while not success:
+                if KILL:
+                    return
+
+                if self.state != LEADER:
+                    return
+
                 self.log_mutex.acquire()
                 entries_to_send = [en.to_string() for en in self.log[prev_log_index+1:]]
                 # [] means a heartbeat
                 target_term, success = s.append_entries_rpc(self.current_term, self.host_id, prev_log_index, prev_log_term, commited_index, entries_to_send)
+                print 'send a heartbeat to ', node_id, ", and get respone ", success, target_term
                 self.log_mutex.release()
                 if success:
+                    self.followers_next_index[node_id] = prev_log_index + 1 + len(entries_to_send)
                     break
                 prev_log_index -= 1
                 if len(self.log) > prev_log_index and prev_log_index >= 0:
@@ -261,14 +278,15 @@ class Datacenter(object):
                 else:
                     prev_log_term = -1
 
+            # update index_append_count
             for i in range(commited_index + 1, len(self.log)):
                 self.commit_mutex.acquire()
                 if i > len(self.committed_entry_result) - 1:
                     self.index_append_count[i].add(node_id)
-                self.followers_next_index[node_id] = i+1
                 self.commit_mutex.release()
 
         except Exception as e:
+            self.log_mutex.release()
             print "could not send heartbeat to %s.. Exception: %s" % (str(port), str(e))
 
     def send_a_request_vote_rpc(self, ip, port):
@@ -280,6 +298,9 @@ class Datacenter(object):
             term = -1
 
         while (not self.check_election_timeout()) and (not success) and self.state == CANDIDATE:
+            if KILL:
+                return
+
             try:
                 s = xmlrpclib.ServerProxy(url)
                 term_return, vote_granted = s.request_vote_rpc(self.host_id, self.current_term, len(self.log) - 1, term)
@@ -321,7 +342,8 @@ class Datacenter(object):
             self.log_mutex.release()
 
             while entry_index > len(self.committed_entry_result) - 1:
-                pass
+                if KILL:
+                    return
 
             return self.committed_entry_result[entry_index]
             # then try to get it commit
@@ -374,9 +396,13 @@ if __name__ == '__main__':
     datacenter_obj = cluster_init(config_filename=config_filename, host_id=host_id)
     datacenter_obj.start()
 
-    server = SimpleThreadedXMLRPCServer(("localhost", datacenter_obj.port), allow_none=True, logRequests=False)
-    print "Listening on port %d..." % datacenter_obj.port
-    server.register_multicall_functions()
-    server.register_instance(datacenter_obj)
-    server.serve_forever()
-
+    try:
+        server = SimpleThreadedXMLRPCServer(("localhost", datacenter_obj.port), allow_none=True, logRequests=False)
+        print "Listening on port %d..." % datacenter_obj.port
+        server.register_multicall_functions()
+        server.register_instance(datacenter_obj)
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print "#########################################"
+        KILL = True
+        sys.exit()
