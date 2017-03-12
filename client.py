@@ -25,7 +25,7 @@ if __name__ == '__main__':
         url = 'http://localhost:' + str(port_to_connect)
         s = xmlrpclib.ServerProxy(url)
         while True:
-            command = raw_input("what to do: 1. buy xxx; 2. show; 3. change config ")
+            command = raw_input("what to do: 1. buy xxx; 2. show; 3. add xxx\n:")
             if command.startswith('buy'):
                 num = command.split(' ')[1]
                 if not num.isdigit():
@@ -34,11 +34,16 @@ if __name__ == '__main__':
                 print s.buy_ticket_rpc(num)
 
             elif command.startswith('show'):
-                #TODO
-                TODO = 1
-            elif command.startswith('change'):
-                #TODO
-                TODO = 1
+                print s.show_rpc()
+
+            elif command.startswith('add'):
+                configs = []
+                num = int(command.split(' ')[1])
+                for i in range(num):
+                    command = raw_input("type: id, ip, port, split by space\n:")
+                    configs.append( command.split() )
+                print configs
+                s.add_server_rpc(configs)
             else:
                 print 'wrong command'
     except Exception as e:

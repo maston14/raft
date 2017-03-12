@@ -38,11 +38,12 @@ class Datacenter(object):
         super(Datacenter, self).__init__()
         # self connection
         self.host_id = host_id
-        self.ip = None
+        self.ip = ip
         self.port = port
 
         # global config
         self.addresses = addresses  # {id: (ip, port)}
+        self.old_addresses = {}
 
         # local state
         self.state = FOLLOWER
@@ -58,7 +59,7 @@ class Datacenter(object):
         self.election_timeout = random.uniform(TIMEOUT_LOW, TIMEOUT_HIGH)
 
         # Candidate use
-        self.granted_votes = 0
+        self.granted_votes = set()
         self.granted_votes_mutex = threading.Lock()
 
         # Leader use
@@ -103,17 +104,18 @@ class Datacenter(object):
         print 'Candidate incremented term ' + str(self.current_term)
         self.voted_in = self.current_term
 
-        self.granted_votes = 1
+        self.granted_votes = set()
         self.reset_election_timeout()
-        for node_id in self.addresses:
-            threading.Thread(target=self.send_a_request_vote_rpc, args=self.addresses[node_id]).start()
+        for node_id in set(self.addresses) | set(self.old_addresses):
+            threading.Thread(target=self.send_a_request_vote_rpc, args=(node_id,) ).start()
 
-        while (self.state == CANDIDATE) and (not self.check_election_timeout()) and (
-            self.granted_votes < (len(self.addresses) + 1) / 2 + 1):
+        win = self.check_majority(self.granted_votes)
+        while (self.state == CANDIDATE) and (not self.check_election_timeout()) and (not win):
+            win = self.check_majority(self.granted_votes)
             if KILL:
                 return
 
-        if self.granted_votes >= (len(self.addresses) + 1) / 2 + 1:
+        if win:
             self.change_state(LEADER)
             self.leader_id = self.host_id
             for node_id in self.addresses:
@@ -122,7 +124,7 @@ class Datacenter(object):
             self.change_state(FOLLOWER)
 
     def serve_as_leader(self):
-        for node_id in self.addresses:
+        for node_id in set(self.addresses) | set(self.old_addresses):
             next_index = self.followers_next_index[node_id]
             threading.Thread(target=self.send_an_append_entries, args=(node_id, next_index)).start()
 
@@ -159,48 +161,76 @@ class Datacenter(object):
 
         if len(entries) == 0:
             print "receive heartbeat from node[%d] in term %d" % (leader_id, leader_term)
+            print 'heartbeat params: ', prev_log_index, prev_log_term, commited_index, entries
             pass
         else:
             print "receive append from node[%d] in term %d" % (leader_id, leader_term)
             print 'params: ' , prev_log_index, prev_log_term, commited_index, entries
+            pass
 
         entries = [Entry(-1, "", string) for string in entries]
 
         if leader_term < self.current_term:
             time.sleep(MESSAGE_DELAY)
+            print "F1"
             return (self.current_term, False)
 
         # update leader info
         self.current_term = leader_term
-        self.change_state(FOLLOWER)
+        if self.state != FOLLOWER:
+            self.change_state(FOLLOWER)
         self.leader_id = leader_id
         self.reset_election_timeout()
 
         # last term not match
         if len(self.log) > 0 and (prev_log_index > len(self.log) - 1 or prev_log_term != self.log[prev_log_index].term):
             time.sleep(MESSAGE_DELAY)
+            print "F2"
             return (self.current_term, False)
 
         if len(self.log) <= 0 and prev_log_index != -1:
             time.sleep(MESSAGE_DELAY)
+            print "F3"
             return (self.current_term, False)
 
         # append new entries anyway
         if len(entries) > 0:
-            self.log_mutex.acquire()
-            print 'here 5'
-            self.log = self.log[:prev_log_index + 1] + entries
-            self.log_mutex.release()
+            self.append_entries(entries, prev_log_index)
 
         # commit
         for i in range(len(self.committed_entry_result) - 1 + 1, commited_index + 1):
             self.commit_entry()
         time.sleep(MESSAGE_DELAY)
+        print "T"
         return (self.current_term, True)
 
     # Utility
+    def check_majority(self, id_set):
+        new_count = len(id_set & set(self.addresses)) + 1
+        old_count = len(id_set & set(self.old_addresses)) + 1
+        new_ok = (new_count >= (len(self.addresses) + 1) / 2 + 1)
+        old_ok = (len(self.old_addresses) == 0 or (old_count >= (len(self.old_addresses) + 1) / 2 + 1))
+        return new_ok and old_ok
+
+    def append_entries(self, entries, append_from = None):
+        self.log_mutex.acquire()
+        if append_from != None:
+            self.log = self.log[:append_from + 1]
+        for en in entries:
+            self.log.append(en)
+            print "append:", en.to_string()
+            entry_index = len(self.log) - 1
+            if self.host_id == self.leader_id:
+                self.index_append_count[entry_index] = set()
+            if en.command.startswith('N'):
+                self.old_addresses = {}
+            if en.command.startswith('ON'):
+                self.decode_config_str(en.command)
+        self.log_mutex.release()
+        return entry_index # index of last appended entry
+
     def commit_entry(self):
-        # TODO
+
         self.commit_mutex.acquire()
 
         next_commit_index = len(self.committed_entry_result)
@@ -217,8 +247,15 @@ class Datacenter(object):
                 self.committed_entry_result.append(False)
                 print "commit:", next_commit_index, "False, tickets:", self.tickets_left
 
-        else: # config change
-            self.committed_entry_result.append(False)
+        elif self.log[next_commit_index].command.startswith('ON'): # config change
+            self.committed_entry_result.append('ON')
+            print "commit:", next_commit_index, "Old + New"
+            if self.host_id == self.leader_id:
+                self.append_entries( [Entry(self.current_term, 'N')] )
+
+        elif self.log[next_commit_index].command.startswith('N'): # config change
+            self.committed_entry_result.append('N')
+            print "commit:", next_commit_index, "N"
 
         print self.show_rpc()
         self.commit_mutex.release()
@@ -230,7 +267,7 @@ class Datacenter(object):
 
             if self.state == LEADER:
                 for index in sorted(self.index_append_count.keys()):
-                    if len(self.index_append_count[index]) + 1 >= (len(self.addresses) + 1) / 2 + 1:
+                    if self.check_majority(self.index_append_count[index]):
                         self.commit_entry()
                     else:
                         break
@@ -243,7 +280,10 @@ class Datacenter(object):
         self.last_update = time.time()
 
     def send_an_append_entries(self, node_id, next_index=0):
-        ip, port = self.addresses[node_id]
+        if node_id in self.addresses:
+            ip, port = self.addresses[node_id]
+        else:
+            ip, port = self.old_addresses[node_id]
         url = 'http://' + str(ip) + ':' + str(port)
         try:
             s = xmlrpclib.ServerProxy(url)
@@ -267,7 +307,7 @@ class Datacenter(object):
                 entries_to_send = [en.to_string() for en in self.log[prev_log_index+1:]]
                 # [] means a heartbeat
                 target_term, success = s.append_entries_rpc(self.current_term, self.host_id, prev_log_index, prev_log_term, commited_index, entries_to_send)
-                print 'send a heartbeat to ', node_id, ", and get respone ", success, target_term
+                #print 'send', entries_to_send, 'to', node_id, ", and get respone ", success, target_term
                 self.log_mutex.release()
                 if success:
                     self.followers_next_index[node_id] = prev_log_index + 1 + len(entries_to_send)
@@ -289,7 +329,11 @@ class Datacenter(object):
             self.log_mutex.release()
             print "could not send heartbeat to %s.. Exception: %s" % (str(port), str(e))
 
-    def send_a_request_vote_rpc(self, ip, port):
+    def send_a_request_vote_rpc(self, node_id):
+        if node_id in self.addresses:
+            ip, port = self.addresses[node_id]
+        else:
+            ip, port = self.old_addresses[node_id]
         url = 'http://' + str(ip) + ':' + str(port)
         success = False
         if len(self.log) > 0:
@@ -307,7 +351,7 @@ class Datacenter(object):
                 success = True
                 if vote_granted:
                     self.granted_votes_mutex.acquire()
-                    self.granted_votes += 1
+                    self.granted_votes.add(node_id)
                     self.granted_votes_mutex.release()
             except Exception as e:
                 print "could not connect %s.. Exception: %s" % (str(port), str(e))
@@ -335,18 +379,14 @@ class Datacenter(object):
         if self.host_id == self.leader_id:
             # a new entry
             entry = Entry(self.current_term, str(num))
-            self.log_mutex.acquire()
-            self.log.append(entry)
-            entry_index = len(self.log) - 1
-            self.index_append_count[entry_index] = set()
-            self.log_mutex.release()
+            entry_index = self.append_entries([entry])
 
             while entry_index > len(self.committed_entry_result) - 1:
                 if KILL:
                     return
 
             return self.committed_entry_result[entry_index]
-            # then try to get it commit
+
         else:
             # forward it to the leader
             rpc_connection = self.get_a_rpc_connection_to_leader()
@@ -358,6 +398,55 @@ class Datacenter(object):
     def show_rpc(self):
         return self.tickets_left, [en.to_string() for en in self.log], self.committed_entry_result
 
+    # config -> str
+    def encode_config_str(self, servers = []):
+        new_str = ""
+        for node_id in self.addresses:
+            new_str += "%d,%s,%d " % (node_id, self.addresses[node_id][0], self.addresses[node_id][1])
+        new_str += "%d,%s,%d " % (self.host_id, self.ip, self.port)
+        for triple in servers:
+            new_str += "%s,%s,%s " % tuple(triple)
+        return new_str
+
+    # str -> config
+    def decode_config_str(self, command):
+        addresses = {}
+        old_addresses = {}
+        split_cmd = command.split("|")
+        for single_str in split_cmd[1].strip().split():
+            node_id, ip, port = single_str.split(",")
+            if int(node_id) != self.host_id:
+                old_addresses[ int(node_id) ] = (ip, int(port))
+        for single_str in split_cmd[2].strip().split():
+            node_id, ip, port = single_str.split(",")
+            if int(node_id) != self.host_id:
+                addresses[int(node_id)] = (ip, int(port))
+
+        for node_id in set(old_addresses) | set(addresses):
+            if node_id not in self.followers_next_index:
+                self.followers_next_index[node_id] = 0
+        self.old_addresses = old_addresses
+        self.addresses = addresses
+
+    # [(id, ip, port)]
+    def add_server_rpc(self, servers):
+        # if I am the leader
+        if self.host_id == self.leader_id:
+            # a new entry
+            str_old = self.encode_config_str([])
+            str_new = self.encode_config_str(servers)
+            command = "ON|%s|%s" % (str_old, str_new)
+
+            entry = Entry(self.current_term, command)
+            self.append_entries( [entry] )
+
+        else:
+            # forward it to the leader
+            rpc_connection = self.get_a_rpc_connection_to_leader()
+            try:
+                rpc_connection.add_server_rpc(servers)
+            except Exception as e:
+                print "could not reach leader .. Exception: %s" % str(e)
 
 class SimpleThreadedXMLRPCServer(ThreadingMixIn, SimpleXMLRPCServer):
     pass
@@ -391,9 +480,14 @@ def cluster_init(config_filename, host_id):
 
 if __name__ == '__main__':
     host_id = int(sys.argv[1])
-    config_filename = sys.argv[2]
-
-    datacenter_obj = cluster_init(config_filename=config_filename, host_id=host_id)
+    if len(sys.argv) == 3:
+        config_filename = sys.argv[2]
+        datacenter_obj = cluster_init(config_filename=config_filename, host_id=host_id)
+    else:
+        ip = sys.argv[2]
+        port = int(sys.argv[3])
+        tickets_left = int(sys.argv[4])
+        datacenter_obj = Datacenter(host_id, ip, port, {}, tickets_left)
     datacenter_obj.start()
 
     try:
