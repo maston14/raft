@@ -31,7 +31,7 @@ if __name__ == '__main__':
                 if not num.isdigit():
                     print 'wrong number of ticket'
                     continue
-                print s.buy(num)
+                print s.buy_ticket_rpc(num)
 
             elif command.startswith('show'):
                 #TODO
