@@ -149,8 +149,8 @@ class Datacenter(object):
 
                 self.current_term = candidate_term
                 self.voted_in = candidate_term
-                self.change_state(FOLLOWER)
                 self.reset_election_timeout()
+                self.change_state(FOLLOWER)
                 print '[%s] grant vote for candidate %d in term %d' % (time.time(), candidate_id, candidate_term)
                 time.sleep(MESSAGE_DELAY)
                 return self.current_term, True
@@ -393,7 +393,7 @@ class Datacenter(object):
     def change_state(self, state):
         self.state = state
         #self.election_timeout = random.uniform(TIMEOUT_LOW, TIMEOUT_HIGH)
-        print "[" + time.time() + "] " "Changed state to " + str(state) + " in term: " + str(self.current_term)
+        print "[" + str(time.time()) + "] " "Changed state to " + str(state) + " in term: " + str(self.current_term)
 
     def get_a_rpc_connection_to_leader(self):
         ip = self.addresses[self.leader_id][0]
