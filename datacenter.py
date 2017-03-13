@@ -52,6 +52,7 @@ class Datacenter(object):
         self.voted_in = 0
         self.log = []
         self.log_mutex = threading.Lock()
+        # record the commited enrty and its result, mapped one by one with log; True means this entry executed by state machine and return true
         self.committed_entry_result = []
         self.last_committed_index = -1
 
@@ -63,11 +64,14 @@ class Datacenter(object):
         self.granted_votes_mutex = threading.Lock()
 
         # Leader use
-        self.commit_votes_for_current_term = 0
-        self.commited_for_current_term = False
+        # record each follower's next index
         self.followers_next_index = {}
+        # initialize
         for node_id in self.addresses:
             self.followers_next_index[node_id] = 0
+
+        # used for record followes' voting status for each entry. if it has majority then commit;
+        # new leader must commit one entry of its own term then commit the possible previous term
         self.index_append_count = collections.defaultdict(set) # {index: count}
         self.commit_mutex = threading.Lock()
 
@@ -81,7 +85,7 @@ class Datacenter(object):
         print "Raft start with timeout: %f" % self.election_timeout
         threading.Thread(target=self.check_commit, args=()).start()
 
-    # membership
+    # membership: keep running to check the membership
     def membership(self):
         while True:
             if KILL:
@@ -89,7 +93,7 @@ class Datacenter(object):
 
             if self.state == FOLLOWER:
                 if self.check_election_timeout():
-                    print 'Timeout, I am gonna be the second DT'
+                    print '[%s] Timeout, I am gonna be the second Donald to run an election' % time.time()
                     self.change_state(CANDIDATE)
 
             if self.state == CANDIDATE:
@@ -106,10 +110,12 @@ class Datacenter(object):
 
         self.granted_votes = set()
         self.reset_election_timeout()
+        # send request_vote to everyone.
         for node_id in set(self.addresses) | set(self.old_addresses):
             threading.Thread(target=self.send_a_request_vote_rpc, args=(node_id,) ).start()
 
         win = self.check_majority(self.granted_votes)
+        # keep waiting until knowing a leader or timeout or not win
         while (self.state == CANDIDATE) and (not self.check_election_timeout()) and (not win):
             win = self.check_majority(self.granted_votes)
             if KILL:
@@ -118,6 +124,7 @@ class Datacenter(object):
         if win:
             self.change_state(LEADER)
             self.leader_id = self.host_id
+            # update followers' next index to leader's log's last index + 1
             for node_id in self.addresses:
                 self.followers_next_index[node_id] = len(self.log)
         else:
@@ -126,6 +133,7 @@ class Datacenter(object):
     def serve_as_leader(self):
         for node_id in set(self.addresses) | set(self.old_addresses):
             next_index = self.followers_next_index[node_id]
+            # send out heartbeat
             threading.Thread(target=self.send_an_append_entries, args=(node_id, next_index)).start()
 
 
@@ -138,11 +146,12 @@ class Datacenter(object):
         if candidate_term > self.current_term and candidate_term > self.voted_in:
             if len(self.log) == 0 or \
                     (len(self.log) > 0 and ( last_log_term > self.log[-1].term or (last_log_term == self.log[-1].term and last_log_index >= len(self.log) - 1))):
+
                 self.current_term = candidate_term
                 self.voted_in = candidate_term
                 self.change_state(FOLLOWER)
                 self.reset_election_timeout()
-                print 'grant vote for candidate %d in term %d' % (candidate_id, candidate_term)
+                print '[%s] grant vote for candidate %d in term %d' % (time.time(), candidate_id, candidate_term)
                 time.sleep(MESSAGE_DELAY)
                 return self.current_term, True
 
@@ -161,18 +170,18 @@ class Datacenter(object):
 
         if len(entries) == 0:
             print "receive heartbeat from node[%d] in term %d" % (leader_id, leader_term)
-            print 'heartbeat params: ', prev_log_index, prev_log_term, commited_index, entries
+            #print 'heartbeat params: ', prev_log_index, prev_log_term, commited_index, entries
             pass
         else:
-            print "receive append from node[%d] in term %d" % (leader_id, leader_term)
-            print 'params: ' , prev_log_index, prev_log_term, commited_index, entries
+            print "receive append from node[%d] in term %d for entries %s" % (leader_id, leader_term, entries)
+            #print 'params: ' , prev_log_index, prev_log_term, commited_index, entries
             pass
 
         entries = [Entry(-1, "", string) for string in entries]
 
         if leader_term < self.current_term:
             time.sleep(MESSAGE_DELAY)
-            print "F1"
+            #print "F1"
             return (self.current_term, False)
 
         # update leader info
@@ -185,12 +194,12 @@ class Datacenter(object):
         # last term not match
         if len(self.log) > 0 and (prev_log_index > len(self.log) - 1 or prev_log_term != self.log[prev_log_index].term):
             time.sleep(MESSAGE_DELAY)
-            print "F2"
+            #print "F2"
             return (self.current_term, False)
 
         if len(self.log) <= 0 and prev_log_index != -1:
             time.sleep(MESSAGE_DELAY)
-            print "F3"
+            #print "F3"
             return (self.current_term, False)
 
         # append new entries anyway
@@ -201,10 +210,12 @@ class Datacenter(object):
         for i in range(len(self.committed_entry_result) - 1 + 1, commited_index + 1):
             self.commit_entry()
         time.sleep(MESSAGE_DELAY)
-        print "T"
+        #print "T"
         return (self.current_term, True)
 
     # Utility
+
+    # check whether a set has a size that satisfy majority
     def check_majority(self, id_set):
         new_count = len(id_set & set(self.addresses)) + 1
         old_count = len(id_set & set(self.old_addresses)) + 1
@@ -218,10 +229,12 @@ class Datacenter(object):
             self.log = self.log[:append_from + 1]
         for en in entries:
             self.log.append(en)
-            print "append:", en.to_string()
+            print "append: ", en.to_string()
             entry_index = len(self.log) - 1
+            # if I am leader, prepare for append entry vote
             if self.host_id == self.leader_id:
                 self.index_append_count[entry_index] = set()
+            # extra things to do when config changes
             if en.command.startswith('N'):
                 self.old_addresses = {}
             if en.command.startswith('ON'):
@@ -232,13 +245,15 @@ class Datacenter(object):
     def commit_entry(self):
 
         self.commit_mutex.acquire()
-
+        # every time we try to commit a entry that has not been committed
         next_commit_index = len(self.committed_entry_result)
+
         if next_commit_index in self.index_append_count:
             del self.index_append_count[next_commit_index]
 
-        if self.log[next_commit_index].command.isdigit():
-            num = int(self.log[next_commit_index].command)
+        if self.log[next_commit_index].command[0].isdigit():
+            cmd_str = str(self.log[next_commit_index].command)
+            num = int(cmd_str.split(',')[0])
             if num <= self.tickets_left:
                 self.tickets_left -= num
                 self.committed_entry_result.append(True)
@@ -257,14 +272,14 @@ class Datacenter(object):
             self.committed_entry_result.append('N')
             print "commit:", next_commit_index, "N"
 
-        print self.show_rpc()
+        #print self.show_rpc()
         self.commit_mutex.release()
 
     def check_commit(self):
         while True:
             if KILL:
                 return
-
+            # keep checking whether one entry can be committed
             if self.state == LEADER:
                 for index in sorted(self.index_append_count.keys()):
                     if self.check_majority(self.index_append_count[index]):
@@ -278,21 +293,27 @@ class Datacenter(object):
 
     def reset_election_timeout(self):
         self.last_update = time.time()
+        self.election_timeout = random.uniform(TIMEOUT_LOW, TIMEOUT_HIGH)
 
-    def send_an_append_entries(self, node_id, next_index=0):
+    def send_an_append_entries(self, node_id, next_index = 0):
+        # incase of config change
         if node_id in self.addresses:
             ip, port = self.addresses[node_id]
         else:
             ip, port = self.old_addresses[node_id]
+
         url = 'http://' + str(ip) + ':' + str(port)
         try:
             s = xmlrpclib.ServerProxy(url)
+
             prev_log_index = next_index - 1
             if len(self.log) > prev_log_index and prev_log_index >= 0:
                 prev_log_term = self.log[prev_log_index].term
             else:
                 prev_log_term = -1
+
             commited_index = len(self.committed_entry_result) - 1
+            # Flag
             success = False
 
             # repair all entries
@@ -304,15 +325,27 @@ class Datacenter(object):
                     return
 
                 self.log_mutex.acquire()
-                entries_to_send = [en.to_string() for en in self.log[prev_log_index+1:]]
+                """
+                leader maintains the next_index for each follower, which is the index leader knows about followers' log
+                here we use prev_log_index + 1, which equals to next_index, but we mean need to update this by updating prev_log_index
+                everytime, leader send its own log from prev_log_index + 1 -> len(log) to the follower
+                when the prev_log_index + 1 == len(log), this is a heartbeat
+                """
+                entries_to_send = [en.to_string() for en in self.log[prev_log_index + 1:]]
+                """
                 # [] means a heartbeat
+                # if the prev_log is not matched, the follower will send back False, and leader decrease the prev_log_index of this follower by 1, adding one more entry
+                # and try again
+                """
                 target_term, success = s.append_entries_rpc(self.current_term, self.host_id, prev_log_index, prev_log_term, commited_index, entries_to_send)
                 #print 'send', entries_to_send, 'to', node_id, ", and get respone ", success, target_term
                 self.log_mutex.release()
                 if success:
                     self.followers_next_index[node_id] = prev_log_index + 1 + len(entries_to_send)
                     break
+                # if append returns a False, update prev_log_index and prev_log_term
                 prev_log_index -= 1
+
                 if len(self.log) > prev_log_index and prev_log_index >= 0:
                     prev_log_term = self.log[prev_log_index].term
                 else:
@@ -327,7 +360,7 @@ class Datacenter(object):
 
         except Exception as e:
             self.log_mutex.release()
-            print "could not send heartbeat to %s.. Exception: %s" % (str(port), str(e))
+            #print "could not send heartbeat to %s.. Exception: %s" % (str(port), str(e))
 
     def send_a_request_vote_rpc(self, node_id):
         if node_id in self.addresses:
@@ -354,13 +387,13 @@ class Datacenter(object):
                     self.granted_votes.add(node_id)
                     self.granted_votes_mutex.release()
             except Exception as e:
-                print "could not connect %s.. Exception: %s" % (str(port), str(e))
+                #print "could not connect %s.. Exception: %s" % (str(port), str(e))
                 time.sleep(0.5)
 
     def change_state(self, state):
         self.state = state
-        self.election_timeout = random.uniform(TIMEOUT_LOW, TIMEOUT_HIGH)
-        print "Changed state to " + str(state) + " in term: " + str(self.current_term)
+        #self.election_timeout = random.uniform(TIMEOUT_LOW, TIMEOUT_HIGH)
+        print "[" + time.time() + "] " "Changed state to " + str(state) + " in term: " + str(self.current_term)
 
     def get_a_rpc_connection_to_leader(self):
         ip = self.addresses[self.leader_id][0]
@@ -370,30 +403,39 @@ class Datacenter(object):
             s = xmlrpclib.ServerProxy(url)
             return s
         except Exception as e:
-            print "could not reach leader at %s.. Exception: %s" % (str(port), str(e))
+            #print "could not reach leader at %s.. Exception: %s" % (str(port), str(e))
+            pass
 
     # Client rpc
 
-    def buy_ticket_rpc(self, num):
+    def buy_ticket_rpc(self, num, address_client_connected_to):
         # if I am the leader
         if self.host_id == self.leader_id:
             # a new entry
-            entry = Entry(self.current_term, str(num))
+            cmd = str(num) + ', bought by ' + str(address_client_connected_to)
+            entry = Entry(self.current_term, cmd)
             entry_index = self.append_entries([entry])
 
             while entry_index > len(self.committed_entry_result) - 1:
                 if KILL:
                     return
+            while self.committed_entry_result[entry_index] == None:
+                continue
 
-            return self.committed_entry_result[entry_index]
+            if self.committed_entry_result[entry_index]:
+                return 'Successfully buy '+ num + ' tickets'
+            else:
+                return 'Sorry, bro, failed this time, try again'
 
         else:
             # forward it to the leader
             rpc_connection = self.get_a_rpc_connection_to_leader()
             try:
-                rpc_connection.buy_ticket_rpc(num)
+                return rpc_connection.buy_ticket_rpc(num, address_client_connected_to)
             except Exception as e:
-                print "could not reach leader .. Exception: %s" % str(e)
+                return 'Could not reach the leader, wait a sec'
+                #print "could not reach leader .. Exception: %s" % str(e)
+                pass
 
     def show_rpc(self):
         return self.tickets_left, [en.to_string() for en in self.log], self.committed_entry_result
@@ -446,7 +488,8 @@ class Datacenter(object):
             try:
                 rpc_connection.add_server_rpc(servers)
             except Exception as e:
-                print "could not reach leader .. Exception: %s" % str(e)
+                #print "could not reach leader .. Exception: %s" % str(e)
+                pass
 
 class SimpleThreadedXMLRPCServer(ThreadingMixIn, SimpleXMLRPCServer):
     pass

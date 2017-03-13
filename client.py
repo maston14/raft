@@ -31,22 +31,25 @@ if __name__ == '__main__':
                 if not num.isdigit():
                     print 'wrong number of ticket'
                     continue
-                print s.buy_ticket_rpc(num)
+                print s.buy_ticket_rpc(num, port_to_connect)
 
             elif command.startswith('show'):
-                print s.show_rpc()
+                ticket_left, log, committed_log =  s.show_rpc()
+                print 'Reaching to Kiosk# ', port_to_connect, ', tickets left: ', ticket_left, '\n'
+                print 'Local Log: ', log, '\n'
+                print 'Commited Log:', committed_log, '\n'
 
             elif command.startswith('add'):
                 configs = []
                 num = int(command.split(' ')[1])
                 for i in range(num):
-                    command = raw_input("type: id, ip, port, split by space\n:")
+                    command = raw_input("Input: id, ip, port, split by space\n:")
                     configs.append( command.split() )
                 print configs
                 s.add_server_rpc(configs)
             else:
                 print 'wrong command'
     except Exception as e:
-        print 'sth is wrong, Exception: ' + str(e)
+        print 'STH is wrong, Exception: ' + str(e)
 
 
