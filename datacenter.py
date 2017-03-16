@@ -68,7 +68,8 @@ class Datacenter(object):
         self.followers_next_index = {}
         # initialize
         for node_id in self.addresses:
-            self.followers_next_index[node_id] = 0
+            if node_id != self.host_id:
+                self.followers_next_index[node_id] = 0
 
         # used for record followes' voting status for each entry. if it has majority then commit;
         # new leader must commit one entry of its own term then commit the possible previous term
@@ -112,7 +113,8 @@ class Datacenter(object):
         self.reset_election_timeout()
         # send request_vote to everyone.
         for node_id in set(self.addresses) | set(self.old_addresses):
-            threading.Thread(target=self.send_a_request_vote_rpc, args=(node_id,) ).start()
+            if node_id != self.host_id:
+                threading.Thread(target=self.send_a_request_vote_rpc, args=(node_id,) ).start()
 
         win = self.check_majority(self.granted_votes)
         # keep waiting until knowing a leader or timeout or not win
@@ -126,15 +128,17 @@ class Datacenter(object):
             self.leader_id = self.host_id
             # update followers' next index to leader's log's last index + 1
             for node_id in self.addresses:
-                self.followers_next_index[node_id] = len(self.log)
+                if node_id != self.host_id:
+                    self.followers_next_index[node_id] = len(self.log)
         else:
             self.change_state(FOLLOWER)
 
     def serve_as_leader(self):
         for node_id in set(self.addresses) | set(self.old_addresses):
-            next_index = self.followers_next_index[node_id]
-            # send out heartbeat
-            threading.Thread(target=self.send_an_append_entries, args=(node_id, next_index)).start()
+            if node_id != self.host_id:
+                next_index = self.followers_next_index[node_id]
+                # send out heartbeat
+                threading.Thread(target=self.send_an_append_entries, args=(node_id, next_index)).start()
 
 
 
@@ -219,8 +223,10 @@ class Datacenter(object):
     def check_majority(self, id_set):
         new_count = len(id_set & set(self.addresses)) + 1
         old_count = len(id_set & set(self.old_addresses)) + 1
-        new_ok = (new_count >= (len(self.addresses) + 1) / 2 + 1)
-        old_ok = (len(self.old_addresses) == 0 or (old_count >= (len(self.old_addresses) + 1) / 2 + 1))
+
+        new_ok = (new_count >= (len(self.addresses)) / 2 + 1)
+        old_ok = (len(self.old_addresses) == 0 or (old_count >= (len(self.old_addresses)) / 2 + 1))
+
         return new_ok and old_ok
 
     def append_entries(self, entries, append_from = None):
@@ -504,6 +510,9 @@ def cluster_init(config_filename, host_id):
     fin = open(config_filename)
     tickets_left = int(fin.readline().strip())
 
+    host_ip = None
+    host_port = None
+
     # get nodes config
     for aline in fin:
         split_line = aline.strip().split()
@@ -513,10 +522,13 @@ def cluster_init(config_filename, host_id):
         port = int(split_line[2])
 
         if node_id == host_id:
-            datacenter_obj = Datacenter(host_id, ip, port, addresses, tickets_left)
-            continue
+            host_ip = ip
+            host_port = port
 
         addresses[node_id] = (str(ip), port)
+
+    # addresses will include host itself
+    datacenter_obj = Datacenter(host_id, host_ip, host_port, addresses, tickets_left)
 
     return datacenter_obj
 
@@ -533,6 +545,7 @@ if __name__ == '__main__':
         datacenter_obj = Datacenter(host_id, ip, port, {}, tickets_left)
     datacenter_obj.start()
 
+    # start rpc server
     try:
         server = SimpleThreadedXMLRPCServer(("localhost", datacenter_obj.port), allow_none=True, logRequests=False)
         print "Listening on port %d..." % datacenter_obj.port
