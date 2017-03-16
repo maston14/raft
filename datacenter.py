@@ -169,7 +169,7 @@ class Datacenter(object):
         time.sleep(MESSAGE_DELAY)
 
         if len(entries) == 0:
-            print "receive heartbeat from node[%d] in term %d" % (leader_id, leader_term)
+            #print "receive heartbeat from node[%d] in term %d" % (leader_id, leader_term)
             #print 'heartbeat params: ', prev_log_index, prev_log_term, commited_index, entries
             pass
         else:
