@@ -63,7 +63,7 @@ if __name__ == '__main__':
                 config_filename = raw_input("Input the new config filename: ")
                 addresses_tuple_list = read_config_file(config_filename)
                 print addresses_tuple_list
-                s.add_server_rpc(addresses_tuple_list)
+                s.change_config_rpc(addresses_tuple_list)
             else:
                 print 'wrong command'
     except Exception as e:

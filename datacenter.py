@@ -255,8 +255,11 @@ class Datacenter(object):
             # extra things to do when config changes
             if en.command.startswith('N'):
                 self.old_addresses = {}
+                print "new config: %s, has taken effect in term %d \n ********************" % (self.addresses, self.current_term)
             if en.command.startswith('ON'):
                 self.decode_config_str(en.command)
+                print "joint concensus is required with old: %s \n, new: %s \n, in term %d \n ******************" \
+                      "**********" % (self.old_addresses, self.addresses, self.current_term)
         self.log_mutex.release()
         return entry_index # index of last appended entry
 
@@ -295,12 +298,13 @@ class Datacenter(object):
                 print 'I was LEADER!! How could this happen?'
                 print 'I am so sad, Will Terminate Soon! Bye'
                 """
-                seems that this wont kill all the progrom...still need to kill the program manually
-                otherwise, some thread will be bring alive again when add this node into the new config
-                and some thread will be dead..and this will cause strange problem
+                a problem is when to kill the leader if it is not in the new config anymore
+                it seems that if we kill the leader here, say we have 1-3 as old, and 1-5 as new
+                as long as 1-3 have the commited New, leader can be killed, but now we will have 2 3 have new and 4 5 have old + new
+
                 """
-                global KILL
-                KILL = True
+                # TODO: the way to kill the leader is not correct
+                time.sleep(5)
                 os._exit(1)
             print "commit config change:", next_commit_index, "New"
             print "New Config: ", self.addresses
@@ -507,7 +511,7 @@ class Datacenter(object):
         self.addresses = addresses
 
     # [(id, ip, port)]
-    def add_server_rpc(self, servers_tuple_list):
+    def change_config_rpc(self, servers_tuple_list):
         # if I am the leader
         if self.host_id == self.leader_id:
             # a new entry
