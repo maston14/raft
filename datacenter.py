@@ -7,6 +7,7 @@ import xmlrpclib
 import sys
 import collections
 import traceback
+import os
 
 # constant def
 LEADER = "LEADER"
@@ -81,9 +82,12 @@ class Datacenter(object):
 
     def start(self):
         print "[HOST][%s] Datacenter start" % (self.host_id)
-        print self.addresses
+        print "Under Config: ", self.addresses
+
         threading.Thread(target=self.membership, args=()).start()
-        print "Raft start with timeout: %f" % self.election_timeout
+
+        print "Initial timeout: %f" % self.election_timeout
+
         threading.Thread(target=self.check_commit, args=()).start()
 
     # membership: keep running to check the membership
@@ -105,6 +109,9 @@ class Datacenter(object):
                 time.sleep(HEARTBEAT_INTERVAL)
 
     def run_election(self):
+        if self.host_id not in self.addresses:
+            print "not in service anymore"
+            os._exit(0)
         self.current_term += 1
         print 'Candidate incremented term ' + str(self.current_term)
         self.voted_in = self.current_term
@@ -185,7 +192,7 @@ class Datacenter(object):
 
         if leader_term < self.current_term:
             time.sleep(MESSAGE_DELAY)
-            #print "F1"
+            print "F1"
             return (self.current_term, False)
 
         # update leader info
@@ -198,12 +205,15 @@ class Datacenter(object):
         # last term not match
         if len(self.log) > 0 and (prev_log_index > len(self.log) - 1 or prev_log_term != self.log[prev_log_index].term):
             time.sleep(MESSAGE_DELAY)
-            #print "F2"
+            print "F2"
+            log = [Entry(-1, "", string) for string in self.log]
+            print "******log is: %s" % log
+
             return (self.current_term, False)
 
         if len(self.log) <= 0 and prev_log_index != -1:
             time.sleep(MESSAGE_DELAY)
-            #print "F3"
+            print "F3"
             return (self.current_term, False)
 
         # append new entries anyway
@@ -237,6 +247,8 @@ class Datacenter(object):
             self.log.append(en)
             print "append: ", en.to_string()
             entry_index = len(self.log) - 1
+            # after append one entry, might need to do more, especially when changing configs
+
             # if I am leader, prepare for append entry vote
             if self.host_id == self.leader_id:
                 self.index_append_count[entry_index] = set()
@@ -270,13 +282,28 @@ class Datacenter(object):
 
         elif self.log[next_commit_index].command.startswith('ON'): # config change
             self.committed_entry_result.append('ON')
-            print "commit:", next_commit_index, "Old + New"
+            print "commit config change:", next_commit_index, "Old + New"
             if self.host_id == self.leader_id:
                 self.append_entries( [Entry(self.current_term, 'N')] )
 
         elif self.log[next_commit_index].command.startswith('N'): # config change
             self.committed_entry_result.append('N')
-            print "commit:", next_commit_index, "N"
+            # after config change, if leader is not in the new config, after New committer, leader step down
+            if self.state == LEADER and (self.host_id not in self.addresses):
+                self.change_state(FOLLOWER)
+                print 'New config have been committed and I am not in the new config.'
+                print 'I was LEADER!! How could this happen?'
+                print 'I am so sad, Will Terminate Soon! Bye'
+                """
+                seems that this wont kill all the progrom...still need to kill the program manually
+                otherwise, some thread will be bring alive again when add this node into the new config
+                and some thread will be dead..and this will cause strange problem
+                """
+                global KILL
+                KILL = True
+                os._exit(1)
+            print "commit config change:", next_commit_index, "New"
+            print "New Config: ", self.addresses
 
         #print self.show_rpc()
         self.commit_mutex.release()
@@ -449,11 +476,14 @@ class Datacenter(object):
     # config -> str
     def encode_config_str(self, servers = []):
         new_str = ""
-        for node_id in self.addresses:
-            new_str += "%d,%s,%d " % (node_id, self.addresses[node_id][0], self.addresses[node_id][1])
-        new_str += "%d,%s,%d " % (self.host_id, self.ip, self.port)
-        for triple in servers:
-            new_str += "%s,%s,%s " % tuple(triple)
+        # used for convert self.addresses to string
+        if len(servers) == 0:
+            for node_id in self.addresses:
+                new_str += "%d,%s,%d " % (node_id, self.addresses[node_id][0], self.addresses[node_id][1])
+        else:
+            # used for convert new configs to string
+            for triple in servers:
+                new_str += "%s,%s,%s " % tuple(triple)
         return new_str
 
     # str -> config
@@ -463,26 +493,26 @@ class Datacenter(object):
         split_cmd = command.split("|")
         for single_str in split_cmd[1].strip().split():
             node_id, ip, port = single_str.split(",")
-            if int(node_id) != self.host_id:
-                old_addresses[ int(node_id) ] = (ip, int(port))
+            old_addresses[ int(node_id) ] = (ip, int(port))
+
         for single_str in split_cmd[2].strip().split():
             node_id, ip, port = single_str.split(",")
-            if int(node_id) != self.host_id:
-                addresses[int(node_id)] = (ip, int(port))
+            addresses[int(node_id)] = (ip, int(port))
 
         for node_id in set(old_addresses) | set(addresses):
-            if node_id not in self.followers_next_index:
+            if node_id != self.host_id and (node_id not in self.followers_next_index):
                 self.followers_next_index[node_id] = 0
+
         self.old_addresses = old_addresses
         self.addresses = addresses
 
     # [(id, ip, port)]
-    def add_server_rpc(self, servers):
+    def add_server_rpc(self, servers_tuple_list):
         # if I am the leader
         if self.host_id == self.leader_id:
             # a new entry
             str_old = self.encode_config_str([])
-            str_new = self.encode_config_str(servers)
+            str_new = self.encode_config_str(servers_tuple_list)
             command = "ON|%s|%s" % (str_old, str_new)
 
             entry = Entry(self.current_term, command)
@@ -492,7 +522,7 @@ class Datacenter(object):
             # forward it to the leader
             rpc_connection = self.get_a_rpc_connection_to_leader()
             try:
-                rpc_connection.add_server_rpc(servers)
+                rpc_connection.add_server_rpc(servers_tuple_list)
             except Exception as e:
                 #print "could not reach leader .. Exception: %s" % str(e)
                 pass
