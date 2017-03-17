@@ -569,10 +569,8 @@ if __name__ == '__main__':
         config_filename = sys.argv[2]
         datacenter_obj = cluster_init(config_filename=config_filename, host_id=host_id)
     else:
-        ip = sys.argv[2]
-        port = int(sys.argv[3])
-        tickets_left = int(sys.argv[4])
-        datacenter_obj = Datacenter(host_id, ip, port, {}, tickets_left)
+        print "wrong params"
+        sys.exit()
     datacenter_obj.start()
 
     # start rpc server
